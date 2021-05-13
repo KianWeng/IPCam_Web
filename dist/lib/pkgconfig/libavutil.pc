@@ -1,4 +1,4 @@
-prefix=/home/gordon/ffmpeg/../IPCam_Web/dist
+prefix=/home/gjweng/work/IPCAM/ffmpeg/../IPCam_Web/dist
 exec_prefix=${prefix}
 libdir=${prefix}/lib
 includedir=${prefix}/include

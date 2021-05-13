@@ -1,4 +1,4 @@
-prefix=/home/gordon/ffmpeg/../IPCam_Web/dist
+prefix=/home/gjweng/work/IPCAM/ffmpeg/../IPCam_Web/dist
 exec_prefix=${prefix}
 libdir=${prefix}/lib
 includedir=${prefix}/include
@@ -9,6 +9,6 @@ Version: 57.71.100
 Requires: libavcodec >= 57.89.100, libavutil >= 55.58.100
 Requires.private: 
 Conflicts:
-Libs: -L${libdir}  -lavformat -s USE_SDL=2 -lm -pthreads
+Libs: -L${libdir}  -lavformat -lm -pthreads
 Libs.private: 
 Cflags: -I${includedir}
