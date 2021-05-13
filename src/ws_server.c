@@ -6,6 +6,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <websocket.h>
 
 #define BACKLOG 5     //完成三次握手但没有accept的队列的长度
 #define CONCURRENT_MAX 8   //应用层同时可以处理的连接
@@ -13,20 +14,24 @@
 #define BUFFER_SIZE 1024
 
 int client_fds[CONCURRENT_MAX];
+static int client_connect_status[CONCURRENT_MAX] = {0};
 static char input_msg[BUFFER_SIZE];
 static char recv_msg[BUFFER_SIZE];
-static int  server_sock_fd;
+static char *cmd = NULL;
+int  server_sock_fd = 0;
+int websocket_run = 1;
 
 extern int handle_client_msg(int client_id, char *msg);
 
 void *websocket_monitor(void *arg)
 {
+	char *sec_websocket_key = NULL;
     //fd_set
     fd_set server_fd_set;
     int max_fd = -1;
     struct timeval tv; //超时时间设置
 
-    while(1)
+    while(websocket_run)
     {
     	tv.tv_sec = 20;
     	tv.tv_usec = 0;
@@ -88,6 +93,7 @@ void *websocket_monitor(void *arg)
         			if(index >= 0)
         			{
         				printf("新客户端(%d)加入成功 %s:%d\n", index, inet_ntoa(client_address.sin_addr), ntohs(client_address.sin_port));
+						//client_connect_status[index] = 1;
         			}
         			else
         			{
@@ -118,7 +124,20 @@ void *websocket_monitor(void *arg)
 							for(int j = 0; j < byte_num; j++){
 								printf("%d ", recv_msg[j]);
 							}
-							handle_client_msg(i, recv_msg);
+							if (!client_connect_status[i]) {
+								sec_websocket_key = calculate_accept_key(recv_msg);	
+            					websocket_shakehand(client_fds[i], sec_websocket_key);
+            					if (sec_websocket_key != NULL) {
+                					free(sec_websocket_key);
+                					sec_websocket_key = NULL;
+								}
+								client_connect_status[i]=1;
+								continue;
+							}
+							cmd = deal_data(recv_msg, byte_num);
+							handle_client_msg(i, cmd);
+							free(cmd);
+							cmd = NULL;
         				}
         				else if(byte_num < 0)
         				{
@@ -128,6 +147,7 @@ void *websocket_monitor(void *arg)
         				{
         					FD_CLR(client_fds[i], &server_fd_set);
         					client_fds[i] = 0;
+							client_connect_status[i] = 0;
         					printf("客户端(%d)退出了\n", i);
         				}
         			}
@@ -136,17 +156,20 @@ void *websocket_monitor(void *arg)
         }
     }
 
+	printf("stop websocket thread.\n");
+
     return ((void *)0);
 }
 
 int start_websocket_server(){
-	int ret = 0, err;
+	int err, on = 1;
 	pthread_t ws_server_tid;
     //本地地址
     struct sockaddr_in server_addr;
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(SERVER_PORT);
-    server_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+    //server_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+	server_addr.sin_addr.s_addr = htons(INADDR_ANY);
     bzero(&(server_addr.sin_zero), 8);
     //创建socket
     server_sock_fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -155,6 +178,8 @@ int start_websocket_server(){
     	perror("socket error");
     	return -1;
     }
+
+	setsockopt(server_sock_fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on) );
 
     //绑定socket
     int bind_result = bind(server_sock_fd, (struct sockaddr *)&server_addr, sizeof(server_addr));
@@ -174,8 +199,8 @@ int start_websocket_server(){
 	err = pthread_create(&ws_server_tid, NULL, websocket_monitor, NULL);
 	if (err != 0) {
 		fprintf(stderr, "can't create websocket monitor thread: %s\n", strerror(err));
-		ret = -4;
+		return -4;
 	}
 
-	return ret;
+	return 0;
 }

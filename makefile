@@ -11,11 +11,13 @@ LINKFLAGS =
 HEADER += -I./include/arch_v5
 HEADER += -I./include/cavalry
 HEADER += -I./include/sysfs_monitor
+HEADER += -I./include/websocket
 
 #LIBS    += -lrt
 #LIBS    += -pthread
 
-OBJECT := main.o src/ws_server.o src/stream.o\
+OBJECT := main.o src/ws_server.o src/stream.o src/websocket/base64.o src/websocket/intlib.o\
+		  src/websocket/sha1.o src/websocket/websocket.o \
 
 BIN_PATH = ./dist/bin
 

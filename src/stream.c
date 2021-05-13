@@ -31,10 +31,11 @@ static int fd_iav = -1;
 
 static u8 *bsb_mem;
 static u32 bsb_size;
-static int write_video_run = 1;
 static int stream_id_map;
 static int client_id_map[MAX_ENCODE_STREAM_NUM];
+static int first_connect_flag = 1;
 extern int client_fds[8];
+int write_video_run = 1;
 
 static int map_bsb(void)
 {
@@ -152,15 +153,25 @@ static int write_video_file(struct iav_framedesc *framedesc, int new_frame)
 	u32 pic_size = framedesc->size;
 	int stream_id = framedesc->id;
 	int i;
+	/*char *data = NULL;
 	//enum iav_stream_type stream_type = framedesc->stream_type;
 
+	data=(char *)malloc(pic_size);
+	if(!data){
+		printf("Not enough memory\n");
+		return -1;
+	}
 
-	//printf("write frame %d\n",framedesc->frame_num);
+	memset(data, 0, pic_size);
+	memcpy(data, bsb_mem + framedesc->data_addr_offset, pic_size);	*/
+	printf("write frame %d, size %d\n",framedesc->frame_num, pic_size);
 	for(i = 0; i < 8; i++){
 		if(getbit(client_id_map[stream_id], i)){
-			if (write(client_fds[i], bsb_mem + framedesc->data_addr_offset, pic_size) < 0) {
-				perror("Failed to write specify streams into client!\n");
-			}
+			//将每帧数据封装成websocket包然后再发送
+			response(client_fds[i], bsb_mem + framedesc->data_addr_offset, pic_size);
+			//if (write(client_fds[i], bsb_mem + framedesc->data_addr_offset, pic_size) < 0) {
+			//	perror("Failed to write specify streams into client!\n");
+			//}
 		}
 	}
 	
@@ -252,6 +263,8 @@ void *capture_encoded_video(void *arg)
 			}
 
 		}
+		printf("send %ld frames, %ld bytes.\n", total_frames, total_bytes);
+		usleep(20 * 1000);//等待20ms左右
 	}
 
 	printf("stop encoded stream capture\n");
@@ -286,10 +299,20 @@ int init_stream(){
 }
 
 int handle_client_msg(int client_id, char *msg){
-	int  ret = 0, stream_id, cmd;
-	stream_id = msg[3];
-	cmd = msg[2];
-	
+	int  ret = 0, stream_id, i = 0;
+	char *result = NULL;
+	char cmd[4] = {};
+	const char *d = ",";
+
+	result = strtok(msg, d);
+	while(result){
+		//printf("i = %d: result is: %s\n",i, result);
+		cmd[i] = atoi(result);
+		//printf("cmd[%d] = 0x%x\n",i, cmd[i]);
+		i = i + 1;
+		result = strtok(NULL,d);
+	}
+	stream_id = cmd[3];
 
 	if(client_fds[client_id] == 0){
 		printf("[Handle Client Msg]client is not connect.\n");
@@ -297,7 +320,7 @@ int handle_client_msg(int client_id, char *msg){
 		return ret;
 	}
 
-	if((msg[0] == 0x5a) && (msg[1] == 0xa5)){
+	if((cmd[0] == 0x5a) && (cmd[1] == 0xa5)){
 		printf("[Handle Client Msg]get a correct cmd from client.\n");	
 	}else{
 		printf("[Handle Client Msg]invalid cmd.\n");
@@ -305,7 +328,7 @@ int handle_client_msg(int client_id, char *msg){
 		return ret;
 	}
 
-	switch(cmd){
+	switch(cmd[2]){
 		case 0x01:
 			printf("[Handle Client Msg]receive start transport stream cmd from client.\n");
 			stream_id_map = setbit(stream_id_map, stream_id);
