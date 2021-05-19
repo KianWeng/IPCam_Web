@@ -1,14 +1,14 @@
-prefix=/home/gjweng/work/IPCAM/ffmpeg/../IPCam_Web/dist
+prefix=/home/gjweng/work/IPCAM/ffmpeg/../tmp/IPCam_Web/dist
 exec_prefix=${prefix}
-libdir=${prefix}/lib
-includedir=${prefix}/include
+libdir=/home/gjweng/work/IPCAM/ffmpeg/../tmp/IPCam_Web/dist/lib
+includedir=/home/gjweng/work/IPCAM/ffmpeg/../tmp/IPCam_Web/dist/include
 
 Name: libavutil
 Description: FFmpeg utility library
-Version: 55.58.100
+Version: 56.70.100
 Requires: 
 Requires.private: 
 Conflicts:
-Libs: -L${libdir}  -lavutil -lm
+Libs: -L${libdir}  -lavutil -pthread -lm
 Libs.private: 
 Cflags: -I${includedir}

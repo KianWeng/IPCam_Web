@@ -18,6 +18,7 @@
             </span>
             <div id="input">
                 <select id="protocol" onchange="onSelectProto()">
+                    <option value="local">Local</option>
                     <option value="http">HTTP</option>
                     <option value="ws">WS</option>
                     <option value="httpFlv">HTTP-FLV</option>
@@ -66,6 +67,11 @@
     <script type='text/javascript' src="player.js"></script>
     <script type='text/javascript'>
         var defaultProtos = {
+            local: {
+                url: "stream1",
+                waitLength: 512 * 1024,
+                stream: true,
+            },
             http: {
                 url: "https://roblin.cn/wasm/video/h265_high.mp4",
                 waitLength : 512 * 1024,
@@ -83,7 +89,7 @@
             }
         };
         let inputUrl = document.getElementById("inputUrl");
-        inputUrl.value = defaultProtos["http"]["url"];
+        inputUrl.value = defaultProtos["local"]["url"];
 
         //Player object.
         self.player = new Player();
