@@ -1,10 +1,12 @@
 rm -rf web/libffmpeg.wasm web/libffmpeg.js
-export TOTAL_MEMORY=67108864
+export TOTAL_MEMORY=536870912
 export EXPORTED_FUNCTIONS="[ \
     '_initDecoder', \
     '_uninitDecoder', \
     '_openDecoder', \
     '_closeDecoder', \
+    '_openDecoderLiveH26x', \
+    '_closeDecoderLiveH26x', \
     '_sendData', \
     '_decodeOnePacket', \
     '_seekTo', \
@@ -23,6 +25,6 @@ emcc web/decoder.c dist/lib/libavformat.a dist/lib/libavcodec.a dist/lib/libavut
     -s EXPORTED_RUNTIME_METHODS="['addFunction']" \
     -s RESERVED_FUNCTION_POINTERS=14 \
     -s FORCE_FILESYSTEM=1 \
-    -o libffmpeg.js
+    -o web/libffmpeg.js
 
 echo "Finished Build"

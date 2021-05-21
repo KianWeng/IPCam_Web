@@ -42,7 +42,7 @@ function Player() {
     this.decoderState       = decoderStateIdle;
     this.playerState        = playerStateIdle;
     this.decoding           = false;
-    this.decodeInterval     = 20; //20ms decode 一次
+    this.decodeInterval     = 6; //20ms decode 一次
     this.videoRendererTimer = null;
     this.downloadTimer      = null;
     this.chunkInterval      = 200;
@@ -101,9 +101,9 @@ Player.prototype.initWSClient = function () {
             var tmp = dataLength;
             var offset = 0;
             //self.logger.logInfo("receive " + dataLength + "bytes data from server.");
-            if (dataLength > self.fileInfo.chunkSize) {
+            if (dataLength > 65535) {
                 do {
-                    let len = Math.min(self.fileInfo.chunkSize, dataLength);
+                    let len = Math.min(65535, dataLength);
                     var data = value.slice(offset, offset + len);
                     dataLength -= len;
                     offset += len;

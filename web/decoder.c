@@ -2,6 +2,7 @@
 #include <sys/time.h>
 #include <sys/timeb.h>
 #include <unistd.h>
+#include <pthread.h>
 
 typedef void(*VideoCallback)(unsigned char *buff, int size, double timestamp);
 typedef void(*AudioCallback)(unsigned char *buff, int size, double timestamp);
@@ -19,7 +20,7 @@ extern "C" {
 
 #define MIN(X, Y)  ((X) < (Y) ? (X) : (Y))
 
-const int kCustomIoBufferSize = 128 * 1024;
+const int kCustomIoBufferSize = 4 * 1024;
 const int kInitialPcmBufferSize = 128 * 1024;
 const int kDefaultFifoSize = 10 * 1024 * 1024;
 const int kMaxFifoSize = 64 * 1024 * 1024;
@@ -75,6 +76,7 @@ typedef struct WebDecoder {
     int fifoSize;
     int64_t totalFrame;
     int videoOnly;
+    pthread_mutex_t readWriteMutex;
 } WebDecoder;
 
 WebDecoder *decoder = NULL;
@@ -82,13 +84,20 @@ LogLevel logLevel = kLogLevel_None;
 
 int getAailableDataSize();
 
-unsigned long getTickCount() {
+static unsigned long getTickCount() {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return ts.tv_sec * (unsigned long)1000 + ts.tv_nsec / 1000000;
 }
 
-void simpleLog(const char* format, ...) {
+static char* av_get_err(int errnum)
+{
+    static char err_buf[128] = {0};
+    av_strerror(errnum, err_buf, 128);
+    return err_buf;
+}
+
+static void simpleLog(const char* format, ...) {
     if (logLevel == kLogLevel_None) {
         return;
     }
@@ -128,7 +137,7 @@ void simpleLog(const char* format, ...) {
     printf("%s\n", szBuffer);
 }
 
-void ffmpegLogCallback(void* ptr, int level, const char* fmt, va_list vl) {
+static void ffmpegLogCallback(void* ptr, int level, const char* fmt, va_list vl) {
     static int printPrefix	= 1;
     static int count		= 0;
     static char prev[1024]	= { 0 };
@@ -421,9 +430,7 @@ ErrorCode decodePacket(AVPacket *pkt, int *decodedLen) {
 
     ret = avcodec_send_packet(codecContext, pkt);
     if (ret < 0) {
-        char err_info[512] = { 0 };
-        av_strerror(ret, err_info, 512);
-        simpleLog("Error sending a packet for decoding %d %s.", ret, err_info);
+        //simpleLog("Error sending a packet for decoding %d %s.", ret, av_get_err(ret));
         return kErrorCode_FFmpeg_Error;
     }
 
@@ -458,8 +465,10 @@ int readFromFile(uint8_t *data, int len) {
             break;
         }
 
+        pthread_mutex_lock(&decoder->readWriteMutex);
         availableBytes = decoder->fileWritePos - decoder->fileReadPos;
         if (availableBytes <= 0) {
+            pthread_mutex_unlock(&decoder->readWriteMutex);
             break;
         }
 
@@ -468,6 +477,7 @@ int readFromFile(uint8_t *data, int len) {
         fread(data, canReadLen, 1, decoder->fp);
         decoder->fileReadPos += canReadLen;
         ret = canReadLen;
+        pthread_mutex_unlock(&decoder->readWriteMutex);
     } while (0);
     //simpleLog("readFromFile ret %d.", ret);
     return ret;
@@ -483,14 +493,21 @@ int readFromFifo(uint8_t *data, int len) {
             break;
         }	
 
+        pthread_mutex_lock(&decoder->readWriteMutex);
         availableBytes = av_fifo_size(decoder->fifo);
         if (availableBytes <= 0) {
+            simpleLog("fifo is empty....");
+            pthread_mutex_unlock(&decoder->readWriteMutex);
             break;
         }
 
         canReadLen = MIN(availableBytes, len);
         av_fifo_generic_read(decoder->fifo, data, canReadLen, NULL);
         ret = canReadLen;
+        // for(int i = 0; i < canReadLen; i++){
+        //     printf("%x ", *(data+i));
+        // }
+        pthread_mutex_unlock(&decoder->readWriteMutex);
     } while (0);
     //simpleLog("readFromFifo ret %d, left %d.", ret, av_fifo_size(decoder->fifo));
     return ret;
@@ -571,8 +588,10 @@ int writeToFile(unsigned char *buff, int size) {
             break;
         }
 
+        pthread_mutex_lock(&decoder->readWriteMutex);
         leftBytes = decoder->fileSize - decoder->fileWritePos;
         if (leftBytes <= 0) {
+            pthread_mutex_unlock(&decoder->readWriteMutex);
             break;
         }
 
@@ -581,6 +600,7 @@ int writeToFile(unsigned char *buff, int size) {
         fwrite(buff, canWriteBytes, 1, decoder->fp);
         decoder->fileWritePos += canWriteBytes;
         ret = canWriteBytes;
+        pthread_mutex_unlock(&decoder->readWriteMutex);
     } while (0);
     return ret;
 }
@@ -593,6 +613,7 @@ int writeToFifo(unsigned char *buff, int size) {
             break;
         }
 
+        pthread_mutex_lock(&decoder->readWriteMutex);
         int64_t leftSpace = av_fifo_space(decoder->fifo);
         if (leftSpace < size) {
             int growSize = 0;
@@ -611,6 +632,7 @@ int writeToFifo(unsigned char *buff, int size) {
 
         //simpleLog("Wrote %d bytes to fifo, total %d.", size, av_fifo_size(decoder->fifo));
         ret = av_fifo_generic_write(decoder->fifo, buff, size, NULL);
+        pthread_mutex_unlock(&decoder->readWriteMutex);
     } while (0);
     return ret;
 }
@@ -659,6 +681,8 @@ ErrorCode initDecoder(int fileSize, int logLv) {
             decoder->fifo = av_fifo_alloc(decoder->fifoSize);
             decoder->totalFrame = 0;
         }
+        pthread_mutex_init(&decoder->readWriteMutex, NULL);
+        // pthread_mutex_init(&decoder->writeMutex, NULL);
     } while (0);
     simpleLog("Decoder initialized %d.", ret);
     return ret;
@@ -695,6 +719,7 @@ ErrorCode openDecoderLiveH26x(int *paramArray, int paramCount, long videoCallbac
 
         av_register_all();
         avcodec_register_all();
+        av_log_set_level(AV_LOG_FATAL);
 
         if (logLevel == kLogLevel_All) {
             av_log_set_callback(ffmpegLogCallback);
@@ -1120,9 +1145,7 @@ ErrorCode decodeOnePacket() {
 
         if (r < 0 || packet.size == 0) {
             //simpleLog("decode test 04.");
-            char err_info[512] = { 0 };
-            av_strerror(r, err_info, 512);
-            simpleLog("av read frame ret %d %s packet size %d.", r, err_info, packet.size);
+            simpleLog("av read frame ret %d %s packet size %d.", r, av_get_err(r), packet.size);
             break;
         }
 
