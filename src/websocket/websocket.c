@@ -15,7 +15,11 @@
 //#define DEFEULT_SERVER_PORT     8000
 #define WEB_SOCKET_KEY_LEN_MAX  256
 #define RESPONSE_HEADER_LEN_MAX 1024
-//#define PER_LINE_MAX            256
+#define TRAN_MAX_LENGTH            65530
+#define FLAGS_MASK_FIN (1 << 7)
+#define FLAGS_MASK_OP 0x0F
+
+#define MIN(X, Y)  ((X) < (Y) ? (X) : (Y))
  
  
 /**************************************************************************************
@@ -245,88 +249,173 @@ char *deal_data(const char *buffer,const int buf_len)
  *   Output Args: 无
  *  Return Value: data 返回组建后的包
  *************************************************************************************/
-static char *construct_packet_data(const char *message, unsigned long *len)
+static u_char *construct_packet_data(u_char *message, unsigned int n, u_char opcode, unsigned int *len)
 {
-    char *data = NULL;
-    unsigned long n;
+    u_char *data = NULL;
+    u_char head_first_byte;
  
     if (NULL == message) {
         printf("message is NULL.\n");
         return NULL;
     }
  
-    //n = strlen(message); //message is not string
-    n = *len;
+    head_first_byte = FLAGS_MASK_FIN | (opcode & FLAGS_MASK_OP);
+    //printf("head is %d, len is %ld\n", head_first_byte, n);
     if (n < 126) {
-        data=(char *)malloc(n+2);
+        data = (u_char *)malloc(n + 2);
         if (NULL == data) {
             printf("data is NNLL.\n");
             return NULL;
         }
-        memset(data,0,n+2);	 
-        data[0] = 0x82; //发送二进制
+        memset(data, 0, n+2);	 
+        data[0] = head_first_byte; 
         data[1] = n;
-        memcpy(data+2,message,n);
-        *len=n+2;
+        memcpy(data + 2, message, n);
+        *len = n+2;
     } else if (n < 0xFFFF) {
-        data=(char *)malloc(n+4);
+        data = (u_char *)malloc(n + 4);
         if (NULL == data) {
             printf("data is NNLL.\n");
             return NULL;
         }
-        memset(data,0,n+4);
-        data[0] = 0x82; //发送二进制
+        memset(data, 0, n + 4);
+        data[0] = head_first_byte; 
         data[1] = 126;
-        data[2] = (n>>8 & 0xFF);
-        data[3] = (n & 0xFF);
-        memcpy(data+4,message,n);    
-        *len=n+4;
+        data[2] = ((n >> 8) & 0xFF);
+        data[3] = ((n >> 0) & 0xFF);
+        memcpy(data + 4, message, n);    
+        *len=n + 4;
     } else {
-        // 暂不处理超长内容  
-        *len=0;
+        data = (u_char *)malloc(n + 10);
+        if (NULL == data) {
+            printf("data is NNLL.\n");
+            return NULL;
+        }
+        memset(data, 0, n + 10);
+        data[0] = head_first_byte;
+        data[1] = 127;
+        data[2] = ((n >> 56) & 0xFF);
+        data[3] = ((n >> 48) & 0xFF);
+        data[4] = ((n >> 40) & 0xFF);
+        data[5] = ((n >> 32) & 0xFF);
+		data[6] = ((n >> 24) & 0xFF);
+        data[7] = ((n >> 16) & 0xFF);
+        data[8] = ((n >> 8) & 0xFF);
+        data[9] = ((n >> 0) & 0xFF);
+        *len=n + 10;
     }
  
     return data;
 } /* ----- End of construct_packet_data()  ----- */
+
+// static char *construct_packet_data(const char *message, unsigned long *len)
+// {
+//     char *data = NULL;
+//     unsigned long n;
+ 
+//     if (NULL == message) {
+//         printf("message is NULL.\n");
+//         return NULL;
+//     }
+ 
+//     //n = strlen(message); //message is not string
+//     n = *len;
+//     if (n < 126) {
+//         data=(char *)malloc(n+2);
+//         if (NULL == data) {
+//             printf("data is NNLL.\n");
+//             return NULL;
+//         }
+//         memset(data,0,n+2);	 
+//         data[0] = 0x82; //发送二进制
+//         data[1] = n;
+//         memcpy(data+2,message,n);
+//         *len=n+2;
+//     } else if (n < 0xFFFF) {
+//         data=(char *)malloc(n+4);
+//         if (NULL == data) {
+//             printf("data is NNLL.\n");
+//             return NULL;
+//         }
+//         memset(data,0,n+4);
+//         data[0] = 0x82; //发送二进制
+//         data[1] = 126;
+//         data[2] = (n>>8 & 0xFF);
+//         data[3] = (n & 0xFF);
+//         memcpy(data+4,message,n);    
+//         *len=n+4;
+//     } else {
+//         // 暂不处理超长内容  
+//         *len=0;
+//     }
+ 
+//     return data;
+// } /* ----- End of construct_packet_data()  ----- */
  
 /**************************************************************************************
  * Function Name: response
  *   Description: 响应客户端
  *    Input Args: @conn_fd 连接句柄
- *                @message 发送的数据
+ *                @message 发送的数据/字符串
+                  @size 发送的数据/字符串长度
+                  @opcode 标志位 0x0：延续帧 0x1：文本帧 0x2：二进制帧 0x3-7 保留 0x8：断开连接 0x9：ping 0xA：pong 0xB-F：保留
  *   Output Args: 无
- *  Return Value: 无
+ *  Return Value: socket write result
  *************************************************************************************/
-void response(int conn_fd, const char *message, unsigned long size)
+int response(int conn_fd, const u_char *message, unsigned long size, u_char opcode)
 {
-    char *data = NULL;
-    unsigned long n=0;
-
-    n = size;
+    int ret;
+    u_char *data = NULL;
+    u_char *tmpdata = NULL;
+    unsigned int n = 0, offset = 0, len = 0;
  
     if(!conn_fd) {
         printf("conn_fd is error.\n");
-        return ;
+        return -1;
     }
  
     if(NULL == message) {
         printf("message is NULL.\n");
-        return ;
+        return -2;
     }
- 
-    data = construct_packet_data(message, &n); 
-    if(NULL == data || n <= 0)
-    {
-        printf("data is empty!\n");
-        return ;
-    } 
- 
-    write(conn_fd, data, n);
- 
-    if (NULL == data) {
+
+    if(size > TRAN_MAX_LENGTH){
+        data = (u_char *)malloc(size);
+        if(data == NULL){
+            printf("data is NULL.\n");
+            return -3;
+        }
+        memset(data, 0, size);
+        memcpy(data, message, size);
+        do {
+		 	n = MIN(TRAN_MAX_LENGTH, size);
+             printf("***n is %d\n", n);
+            tmpdata = construct_packet_data(data + offset, n, opcode, &len);
+            printf("***len is %d\n", len);
+            if(NULL == tmpdata ){
+                printf("data is empty!\n");
+                return -4;
+            }
+            ret = write(conn_fd, tmpdata, len);
+            size -= n;
+            offset += n;
+            free(tmpdata);
+        } while ( size > 0);
         free(data);
-        data = NULL;
+    } else {
+        tmpdata = construct_packet_data(message, size, opcode, &len); 
+        printf("len is %d\n", len);
+        if(NULL == tmpdata)
+        {
+            printf("data is empty!\n");
+            return -4;
+        } 
+    
+        ret = write(conn_fd, tmpdata, len);
+        free(tmpdata);
     }
+
+    return ret;
 } /* ----- End of response()  ----- */
  
  

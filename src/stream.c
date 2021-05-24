@@ -26,6 +26,7 @@
 #define getbit(var, bit)   ((var >> bit) & 1)
 
 #define MAX_ENCODE_STREAM_NUM	(IAV_STREAM_MAX_NUM_ALL)
+// #define MAX_TRAN_SIZE 40000
 
 static int fd_iav = -1;
 
@@ -34,8 +35,92 @@ static u32 bsb_size;
 static int stream_id_map;
 static int client_id_map[MAX_ENCODE_STREAM_NUM];
 static int first_connect_flag = 1;
+// static int first_i_frame = 0;
 extern int client_fds[8];
 int write_video_run = 1;
+
+static int start_encode(u32 stream_map)
+{
+	struct iav_queryinfo query_info;
+	struct iav_stream_info *stream_info;
+	int i;
+
+	for (i = 0; i < MAX_ENCODE_STREAM_NUM; i++) {
+		if (stream_map & (1 << i)) {
+			memset(&query_info, 0, sizeof(query_info));
+			query_info.qid = IAV_INFO_STREAM;
+			stream_info = &query_info.arg.stream;
+			stream_info->id = i;
+			AM_IOCTL(fd_iav, IAV_IOC_QUERY_INFO, &query_info);
+			if (stream_info->state == IAV_STREAM_STATE_ENCODING) {
+				stream_map &= ~(1 << i);
+			}
+		}
+	}
+	if (stream_map == 0) {
+		printf("already in encoding, nothing to do \n");
+		return 0;
+	}
+
+	AM_IOCTL(fd_iav, IAV_IOC_START_ENCODE, stream_map);
+
+	printf("Start encoding for stream 0x%x successfully\n", stream_map);
+	return 0;
+}
+
+static int stop_encode(u32 streamid)
+{
+	struct iav_queryinfo query_info;
+	struct iav_stream_info *stream_info;
+	u32 stop_streamid = streamid;
+	u32 abort_streamid = streamid;
+	int i;
+
+	for (i = 0; i < MAX_ENCODE_STREAM_NUM; ++i) {
+		if (stop_streamid & (1 << i)) {
+			memset(&query_info, 0, sizeof(query_info));
+			query_info.qid = IAV_INFO_STREAM;
+			stream_info = &query_info.arg.stream;
+			stream_info->id = i;
+			AM_IOCTL(fd_iav, IAV_IOC_QUERY_INFO, &query_info);
+			if (stream_info->state != IAV_STREAM_STATE_ENCODING) {
+				stop_streamid &= ~(1 << i);
+			}
+		}
+	}
+	if (stop_streamid) {
+		printf("Stop encoding for stream 0x%x \n", stop_streamid);
+		AM_IOCTL(fd_iav, IAV_IOC_STOP_ENCODE, stop_streamid);
+	}
+
+	for (i = 0; i < MAX_ENCODE_STREAM_NUM; ++i) {
+		if (abort_streamid & (1 << i)) {
+			memset(&query_info, 0, sizeof(query_info));
+			query_info.qid = IAV_INFO_STREAM;
+			stream_info = &query_info.arg.stream;
+			stream_info->id = i;
+			AM_IOCTL(fd_iav, IAV_IOC_QUERY_INFO, &query_info);
+			if (stream_info->state != IAV_STREAM_STATE_STARTING &&
+				stream_info->state != IAV_STREAM_STATE_STOPPING) {
+				abort_streamid &= ~(1 << i);
+			}
+		}
+	}
+	if (abort_streamid) {
+		printf("Abort encoding for stream 0x%x \n", abort_streamid);
+		AM_IOCTL(fd_iav, IAV_IOC_ABORT_ENCODE, abort_streamid);
+	}
+
+	return 0;
+}
+
+static int abort_encode(u32 streamid)
+{
+	printf("abort encoding for stream 0x%x \n", streamid);
+	AM_IOCTL(fd_iav, IAV_IOC_ABORT_ENCODE, streamid);
+
+	return 0;
+}
 
 static int map_bsb(void)
 {
@@ -164,11 +249,29 @@ static int write_video_file(struct iav_framedesc *framedesc, int new_frame)
 
 	memset(data, 0, pic_size);
 	memcpy(data, bsb_mem + framedesc->data_addr_offset, pic_size);	*/
-	printf("write frame %d, size %d\n",framedesc->frame_num, pic_size);
+	printf("write frame %d, size %d, frame type %d.\n",framedesc->frame_num, pic_size, framedesc->pic_type);
+	// if((framedesc->pic_type != 1) && (first_i_frame != 1)){
+	// 	return 0;
+	// } else {
+	// 	first_i_frame = 1;
+	// }
 	for(i = 0; i < 8; i++){
 		if(getbit(client_id_map[stream_id], i)){
 			//将每帧数据封装成websocket包然后再发送
-			response(client_fds[i], bsb_mem + framedesc->data_addr_offset, pic_size);
+			// if (pic_size > MAX_TRAN_SIZE) {
+			// 	do {
+			// 		len = MAX_TRAN_SIZE;
+			// 		if((pic_size - len) > 0){
+			// 			response(client_fds[i], bsb_mem + framedesc->data_addr_offset + offset, len, 0x2);
+			// 		} else {
+			// 			response(client_fds[i], bsb_mem + framedesc->data_addr_offset + offset, pic_size, 0x2);
+			// 		}
+			// 		pic_size -= len;
+			// 		offset += len;
+			// 	} while ( pic_size > 0);
+			// } else {
+			response(client_fds[i], bsb_mem + framedesc->data_addr_offset, pic_size, 0x2);
+			// }
 			//if (write(client_fds[i], bsb_mem + framedesc->data_addr_offset, pic_size) < 0) {
 			//	perror("Failed to write specify streams into client!\n");
 			//}
@@ -254,17 +357,17 @@ void *capture_encoded_video(void *arg)
 		if(stream_id_map){
 			if ((rval = write_stream(&total_frames, &total_bytes)) < 0) {
 				if (rval == -1) {
-					usleep(100 * 1000);
+					usleep(80 * 1000);
 				} else {
 					fprintf(stderr, "write_stream err code %d \n", rval);
 					break;
 				}
-				continue;
+				//continue;
 			}
 
 		}
-		printf("send %ld frames, %ld bytes.\n", total_frames, total_bytes);
-		usleep(20 * 1000);//等待20ms左右
+		//printf("send %ld frames, %ld bytes.\n", total_frames, total_bytes);
+		usleep(10 * 1000);//等待30ms左右
 	}
 
 	printf("stop encoded stream capture\n");
@@ -330,14 +433,16 @@ int handle_client_msg(int client_id, char *msg){
 
 	switch(cmd[2]){
 		case 0x01:
-			printf("[Handle Client Msg]receive start transport stream cmd from client.\n");
+			printf("[Handle Client Msg]receive start transport stream %d cmd from client.\n", stream_id);
 			stream_id_map = setbit(stream_id_map, stream_id);
 			client_id_map[stream_id] = setbit(client_id_map[stream_id], client_id);
+			start_encode(stream_id_map);
 			break;
 		case 0x02:
-			printf("[Handle Client Msg]receive stop transport stream cmd from client.\n");
+			printf("[Handle Client Msg]receive stop transport stream %d cmd from client.\n", stream_id);
 			stream_id_map = clrbit(stream_id_map, stream_id);
 			client_id_map[stream_id] = clrbit(client_id_map[stream_id], client_id);
+			stop_encode(0x1);
 			break;
 		default:
 			printf("[Handle Client Msg]Unknow cmd 0x%x.\n",cmd);
