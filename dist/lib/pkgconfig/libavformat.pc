@@ -1,14 +1,14 @@
-prefix=/home/gjweng/work/IPCAM/ffmpeg/../IPCam_Web/dist
+prefix=/home/gjweng/work/IPCAM/ffmpeg/../tmp/IPCam_Web/dist
 exec_prefix=${prefix}
-libdir=${prefix}/lib
-includedir=${prefix}/include
+libdir=/home/gjweng/work/IPCAM/ffmpeg/../tmp/IPCam_Web/dist/lib
+includedir=/home/gjweng/work/IPCAM/ffmpeg/../tmp/IPCam_Web/dist/include
 
 Name: libavformat
 Description: FFmpeg container format library
-Version: 57.71.100
-Requires: libavcodec >= 57.89.100, libavutil >= 55.58.100
+Version: 58.76.100
+Requires: libavcodec >= 58.134.100, libavutil >= 56.70.100
 Requires.private: 
 Conflicts:
-Libs: -L${libdir}  -lavformat -lm -pthreads
+Libs: -L${libdir}  -lavformat -lm
 Libs.private: 
 Cflags: -I${includedir}

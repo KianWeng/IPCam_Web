@@ -2,6 +2,7 @@
 #include <sys/time.h>
 #include <sys/timeb.h>
 #include <unistd.h>
+#include <pthread.h>
 
 typedef void(*VideoCallback)(unsigned char *buff, int size, double timestamp);
 typedef void(*AudioCallback)(unsigned char *buff, int size, double timestamp);
@@ -19,10 +20,10 @@ extern "C" {
 
 #define MIN(X, Y)  ((X) < (Y) ? (X) : (Y))
 
-const int kCustomIoBufferSize = 32 * 1024;
+const int kCustomIoBufferSize = 4 * 1024;
 const int kInitialPcmBufferSize = 128 * 1024;
-const int kDefaultFifoSize = 1 * 1024 * 1024;
-const int kMaxFifoSize = 16 * 1024 * 1024;
+const int kDefaultFifoSize = 10 * 1024 * 1024;
+const int kMaxFifoSize = 64 * 1024 * 1024;
 
 typedef enum ErrorCode {
     kErrorCode_Success = 0,
@@ -73,6 +74,9 @@ typedef struct WebDecoder {
     int isStream;
     AVFifoBuffer *fifo;
     int fifoSize;
+    int64_t totalFrame;
+    int videoOnly;
+    pthread_mutex_t readWriteMutex;
 } WebDecoder;
 
 WebDecoder *decoder = NULL;
@@ -80,13 +84,20 @@ LogLevel logLevel = kLogLevel_None;
 
 int getAailableDataSize();
 
-unsigned long getTickCount() {
+static unsigned long getTickCount() {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return ts.tv_sec * (unsigned long)1000 + ts.tv_nsec / 1000000;
 }
 
-void simpleLog(const char* format, ...) {
+static char* av_get_err(int errnum)
+{
+    static char err_buf[128] = {0};
+    av_strerror(errnum, err_buf, 128);
+    return err_buf;
+}
+
+static void simpleLog(const char* format, ...) {
     if (logLevel == kLogLevel_None) {
         return;
     }
@@ -126,7 +137,7 @@ void simpleLog(const char* format, ...) {
     printf("%s\n", szBuffer);
 }
 
-void ffmpegLogCallback(void* ptr, int level, const char* fmt, va_list vl) {
+static void ffmpegLogCallback(void* ptr, int level, const char* fmt, va_list vl) {
     static int printPrefix	= 1;
     static int count		= 0;
     static char prev[1024]	= { 0 };
@@ -302,7 +313,7 @@ ErrorCode processDecodedVideoFrame(AVFrame *frame) {
             break;
         }
 
-        if (decoder->videoCodecContext->pix_fmt != AV_PIX_FMT_YUV420P) {
+        if ((decoder->videoCodecContext->pix_fmt != AV_PIX_FMT_YUV420P) && (decoder->videoCodecContext->pix_fmt != AV_PIX_FMT_YUVJ420P)) {
             simpleLog("Not YUV420P, but unsupported format %d.", decoder->videoCodecContext->pix_fmt);
             ret = kErrorCode_Invalid_Format;
             break;
@@ -319,13 +330,15 @@ ErrorCode processDecodedVideoFrame(AVFrame *frame) {
             break;
         }
         */
-
-        timestamp = (double)frame->pts * av_q2d(decoder->avformatContext->streams[decoder->videoStreamIdx]->time_base);
-
-        if (decoder->accurateSeek && timestamp < decoder->beginTimeOffset) {
-            //simpleLog("video timestamp %lf < %lf", timestamp, decoder->beginTimeOffset);
-            ret = kErrorCode_Old_Frame;
-            break;
+        if(decoder->videoOnly){
+            timestamp = decoder->totalFrame++;
+        } else {
+            timestamp = (double)frame->pts * av_q2d(decoder->avformatContext->streams[decoder->videoStreamIdx]->time_base);
+            if (decoder->accurateSeek && timestamp < decoder->beginTimeOffset) {
+                //simpleLog("video timestamp %lf < %lf", timestamp, decoder->beginTimeOffset);
+                ret = kErrorCode_Old_Frame;
+                break;
+            }
         }
         decoder->videoCallback(decoder->yuvBuffer, decoder->videoSize, timestamp);
     } while (0);
@@ -417,7 +430,7 @@ ErrorCode decodePacket(AVPacket *pkt, int *decodedLen) {
 
     ret = avcodec_send_packet(codecContext, pkt);
     if (ret < 0) {
-        simpleLog("Error sending a packet for decoding %d.", ret);
+        //simpleLog("Error sending a packet for decoding %d %s.", ret, av_get_err(ret));
         return kErrorCode_FFmpeg_Error;
     }
 
@@ -452,8 +465,10 @@ int readFromFile(uint8_t *data, int len) {
             break;
         }
 
+        pthread_mutex_lock(&decoder->readWriteMutex);
         availableBytes = decoder->fileWritePos - decoder->fileReadPos;
         if (availableBytes <= 0) {
+            pthread_mutex_unlock(&decoder->readWriteMutex);
             break;
         }
 
@@ -462,6 +477,7 @@ int readFromFile(uint8_t *data, int len) {
         fread(data, canReadLen, 1, decoder->fp);
         decoder->fileReadPos += canReadLen;
         ret = canReadLen;
+        pthread_mutex_unlock(&decoder->readWriteMutex);
     } while (0);
     //simpleLog("readFromFile ret %d.", ret);
     return ret;
@@ -477,14 +493,22 @@ int readFromFifo(uint8_t *data, int len) {
             break;
         }	
 
+        pthread_mutex_lock(&decoder->readWriteMutex);
         availableBytes = av_fifo_size(decoder->fifo);
         if (availableBytes <= 0) {
+            simpleLog("fifo is empty....");
+            pthread_mutex_unlock(&decoder->readWriteMutex);
+            ret = 0;
             break;
         }
 
         canReadLen = MIN(availableBytes, len);
         av_fifo_generic_read(decoder->fifo, data, canReadLen, NULL);
         ret = canReadLen;
+        // for(int i = 0; i < canReadLen; i++){
+        //     printf("%x ", *(data+i));
+        // }
+        pthread_mutex_unlock(&decoder->readWriteMutex);
     } while (0);
     //simpleLog("readFromFifo ret %d, left %d.", ret, av_fifo_size(decoder->fifo));
     return ret;
@@ -565,8 +589,10 @@ int writeToFile(unsigned char *buff, int size) {
             break;
         }
 
+        pthread_mutex_lock(&decoder->readWriteMutex);
         leftBytes = decoder->fileSize - decoder->fileWritePos;
         if (leftBytes <= 0) {
+            pthread_mutex_unlock(&decoder->readWriteMutex);
             break;
         }
 
@@ -575,6 +601,7 @@ int writeToFile(unsigned char *buff, int size) {
         fwrite(buff, canWriteBytes, 1, decoder->fp);
         decoder->fileWritePos += canWriteBytes;
         ret = canWriteBytes;
+        pthread_mutex_unlock(&decoder->readWriteMutex);
     } while (0);
     return ret;
 }
@@ -587,6 +614,7 @@ int writeToFifo(unsigned char *buff, int size) {
             break;
         }
 
+        pthread_mutex_lock(&decoder->readWriteMutex);
         int64_t leftSpace = av_fifo_space(decoder->fifo);
         if (leftSpace < size) {
             int growSize = 0;
@@ -605,6 +633,7 @@ int writeToFifo(unsigned char *buff, int size) {
 
         //simpleLog("Wrote %d bytes to fifo, total %d.", size, av_fifo_size(decoder->fifo));
         ret = av_fifo_generic_write(decoder->fifo, buff, size, NULL);
+        pthread_mutex_unlock(&decoder->readWriteMutex);
     } while (0);
     return ret;
 }
@@ -651,7 +680,10 @@ ErrorCode initDecoder(int fileSize, int logLv) {
             decoder->isStream = 1;
             decoder->fifoSize = kDefaultFifoSize;
             decoder->fifo = av_fifo_alloc(decoder->fifoSize);
+            decoder->totalFrame = 0;
         }
+        pthread_mutex_init(&decoder->readWriteMutex, NULL);
+        // pthread_mutex_init(&decoder->writeMutex, NULL);
     } while (0);
     simpleLog("Decoder initialized %d.", ret);
     return ret;
@@ -678,6 +710,177 @@ ErrorCode uninitDecoder() {
     return kErrorCode_Success;
 }
 
+ErrorCode openDecoderLiveH26x(int *paramArray, int paramCount, long videoCallback) {
+    ErrorCode ret = kErrorCode_Success;
+    int r = 0;
+    int i = 0;
+    int params[4] = { 0 };
+    do {
+        simpleLog("Opening live h26x decoder.");
+
+        av_register_all();
+        avcodec_register_all();
+        av_log_set_level(AV_LOG_FATAL);
+
+        if (logLevel == kLogLevel_All) {
+            av_log_set_callback(ffmpegLogCallback);
+        }
+        decoder->videoOnly = 1;
+        
+        decoder->avformatContext = avformat_alloc_context();
+        decoder->customIoBuffer = (unsigned char*)av_mallocz(kCustomIoBufferSize);
+
+        AVIOContext* ioContext = avio_alloc_context(
+            decoder->customIoBuffer,
+            kCustomIoBufferSize,
+            0,
+            NULL,
+            readCallback,
+            NULL,
+            seekCallback);
+        if (ioContext == NULL) {
+            ret = kErrorCode_FFmpeg_Error;
+            simpleLog("avio_alloc_context failed.");
+            break;
+        }
+
+        decoder->avformatContext->pb = ioContext;
+        decoder->avformatContext->flags = AVFMT_FLAG_CUSTOM_IO;
+
+        r = avformat_open_input(&decoder->avformatContext, NULL, NULL, NULL);
+        if (r != 0) {
+            ret = kErrorCode_FFmpeg_Error;
+            char err_info[32] = { 0 };
+            av_strerror(ret, err_info, 32);
+            simpleLog("avformat_open_input failed %d %s.", ret, err_info);
+            break;
+        }
+        
+        simpleLog("avformat_open_input success.");
+
+        r = avformat_find_stream_info(decoder->avformatContext, NULL);
+        if (r != 0) {
+            ret = kErrorCode_FFmpeg_Error;
+            simpleLog("av_find_stream_info failed %d.", ret);
+            break;
+        }
+
+        simpleLog("avformat_find_stream_info success.");
+
+        for (i = 0; i < decoder->avformatContext->nb_streams; i++) {
+            decoder->avformatContext->streams[i]->discard = AVDISCARD_DEFAULT;
+        }
+
+        r = openCodecContext(
+            decoder->avformatContext,
+            AVMEDIA_TYPE_VIDEO,
+            &decoder->videoStreamIdx,
+            &decoder->videoCodecContext);
+        if (r != 0) {
+            ret = kErrorCode_FFmpeg_Error;
+            simpleLog("Open video codec context failed %d.", ret);
+            break;
+        }
+
+        simpleLog("Open video codec context success, video stream index %d %x.",
+            decoder->videoStreamIdx, (unsigned int)decoder->videoCodecContext);
+
+        simpleLog("Video stream index:%d pix_fmt:%d resolution:%d*%d.",
+            decoder->videoStreamIdx,
+            decoder->videoCodecContext->pix_fmt,
+            decoder->videoCodecContext->width,
+            decoder->videoCodecContext->height);
+
+        /* For RGB Renderer(2D WebGL).
+        decoder->swsCtx = sws_getContext(
+            decoder->videoCodecContext->width,
+            decoder->videoCodecContext->height,
+            decoder->videoCodecContext->pix_fmt, 
+            decoder->videoCodecContext->width,
+            decoder->videoCodecContext->height,
+            AV_PIX_FMT_RGB32,
+            SWS_BILINEAR, 
+            0, 
+            0, 
+            0);
+        if (decoder->swsCtx == NULL) {
+            simpleLog("sws_getContext failed.");
+            ret = kErrorCode_FFmpeg_Error;
+            break;
+        }
+        */
+        
+        decoder->videoSize = av_image_get_buffer_size(
+            decoder->videoCodecContext->pix_fmt,
+            decoder->videoCodecContext->width,
+            decoder->videoCodecContext->height,1);
+
+        decoder->videoBufferSize = 3 * decoder->videoSize;
+        decoder->yuvBuffer = (unsigned char *)av_mallocz(decoder->videoBufferSize);
+        decoder->avFrame = av_frame_alloc();
+        
+        params[0] = -1;//live video duration is -1
+        params[1] = decoder->videoCodecContext->pix_fmt;
+        params[2] = decoder->videoCodecContext->width;
+        params[3] = decoder->videoCodecContext->height;
+
+        if (paramArray != NULL && paramCount > 0) {
+            for (int i = 0; i < paramCount; ++i) {
+                paramArray[i] = params[i];
+            }
+        }
+
+        decoder->videoCallback = (VideoCallback)videoCallback;
+
+        simpleLog("Decoder opened, duration %ds, picture size %d.", params[0], decoder->videoSize);
+    } while (0);
+
+    if (ret != kErrorCode_Success && decoder != NULL) {
+        av_freep(&decoder);
+    }
+    return ret;
+}
+
+ErrorCode closeDecoderLiveH26x() {
+    ErrorCode ret = kErrorCode_Success;
+    do {
+        if (decoder == NULL || decoder->avformatContext == NULL) {
+            break;
+        }
+
+        if (decoder->videoCodecContext != NULL) {
+            closeCodecContext(decoder->avformatContext, decoder->videoCodecContext, decoder->videoStreamIdx);
+            decoder->videoCodecContext = NULL;
+            simpleLog("Video codec context closed.");
+        }
+
+
+        AVIOContext *pb = decoder->avformatContext->pb;
+        if (pb != NULL) {
+            if (pb->buffer != NULL) {
+                av_freep(&pb->buffer);
+                decoder->customIoBuffer = NULL;
+            }
+            av_freep(&decoder->avformatContext->pb);
+            simpleLog("IO context released.");
+        }
+
+        avformat_close_input(&decoder->avformatContext);
+        decoder->avformatContext = NULL;
+        simpleLog("Input closed.");
+
+        if (decoder->yuvBuffer != NULL) {
+            av_freep(&decoder->yuvBuffer);
+        }
+        
+        if (decoder->avFrame != NULL) {
+            av_freep(&decoder->avFrame);
+        }
+        simpleLog("All buffer released.");
+    } while (0);
+    return ret;
+}
+
 ErrorCode openDecoder(int *paramArray, int paramCount, long videoCallback, long audioCallback, long requestCallback) {
     ErrorCode ret = kErrorCode_Success;
     int r = 0;
@@ -692,7 +895,8 @@ ErrorCode openDecoder(int *paramArray, int paramCount, long videoCallback, long 
         if (logLevel == kLogLevel_All) {
             av_log_set_callback(ffmpegLogCallback);
         }
-        
+
+        decoder->videoOnly = 0;
         decoder->avformatContext = avformat_alloc_context();
         decoder->customIoBuffer = (unsigned char*)av_mallocz(kCustomIoBufferSize);
 
@@ -916,14 +1120,17 @@ ErrorCode decodeOnePacket() {
 
     AVPacket packet;
     av_init_packet(&packet);
+    //simpleLog("enter decode one packet.");
     do {
         if (decoder == NULL) {
             ret = kErrorCode_Invalid_State;
+            simpleLog("[error]there is no invalid decoder.");
             break;
         }
 
         if (getAailableDataSize() <= 0) {
             ret = kErrorCode_Invalid_State;
+            simpleLog("[error]no availbale data size.");
             break;
         }
 
@@ -933,20 +1140,25 @@ ErrorCode decodeOnePacket() {
         r = av_read_frame(decoder->avformatContext, &packet);
         if (r == AVERROR_EOF) {
             ret = kErrorCode_Eof;
+            simpleLog("[error]read frame end of file.");
             break;
         }
 
         if (r < 0 || packet.size == 0) {
+            //simpleLog("decode test 04.");
+            simpleLog("[error]av read frame ret %d %s packet size %d.", r, av_get_err(r), packet.size);
             break;
         }
 
         do {
             ret = decodePacket(&packet, &decodedLen);
             if (ret != kErrorCode_Success) {
+                //simpleLog("decode test 05.");
                 break;
             }
 
             if (decodedLen <= 0) {
+                //simpleLog("decode test 06.");
                 break;
             }
 

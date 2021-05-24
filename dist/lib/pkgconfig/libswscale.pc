@@ -1,12 +1,12 @@
-prefix=/home/gjweng/work/IPCAM/ffmpeg/../IPCam_Web/dist
+prefix=/home/gjweng/work/IPCAM/ffmpeg/../tmp/IPCam_Web/dist
 exec_prefix=${prefix}
-libdir=${prefix}/lib
-includedir=${prefix}/include
+libdir=/home/gjweng/work/IPCAM/ffmpeg/../tmp/IPCam_Web/dist/lib
+includedir=/home/gjweng/work/IPCAM/ffmpeg/../tmp/IPCam_Web/dist/include
 
 Name: libswscale
 Description: FFmpeg image rescaling library
-Version: 4.6.100
-Requires: libavutil >= 55.58.100
+Version: 5.9.100
+Requires: libavutil >= 56.70.100
 Requires.private: 
 Conflicts:
 Libs: -L${libdir}  -lswscale -lm

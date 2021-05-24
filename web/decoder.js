@@ -42,38 +42,65 @@ Decoder.prototype.uninitDecoder = function () {
     }
 };
 
-Decoder.prototype.openDecoder = function () {
-    var paramCount = 7, paramSize = 4;
-    var paramByteBuffer = Module._malloc(paramCount * paramSize);
-    var ret = Module._openDecoder(paramByteBuffer, paramCount, this.videoCallback, this.audioCallback, this.requestCallback);
-    this.logger.logInfo("openDecoder return " + ret);
+Decoder.prototype.openDecoder = function (isLocal) {
+    if(isLocal){
+        var paramCount = 4, paramSize = 4;
+        var paramByteBuffer = Module._malloc(paramCount * paramSize);
+        var ret = Module._openDecoderLiveH26x(paramByteBuffer, paramCount, this.videoCallback);
+        this.logger.logInfo("openDecoderLiveH26x return " + ret);
+    } else {
+        var paramCount = 7, paramSize = 4;
+        var paramByteBuffer = Module._malloc(paramCount * paramSize);
+        var ret = Module._openDecoder(paramByteBuffer, paramCount, this.videoCallback, this.audioCallback, this.requestCallback);
+        this.logger.logInfo("openDecoder return " + ret);
+    }
 
     if (ret == 0) {
-        var paramIntBuff    = paramByteBuffer >> 2;
-        var paramArray      = Module.HEAP32.subarray(paramIntBuff, paramIntBuff + paramCount);
-        var duration        = paramArray[0];
-        var videoPixFmt     = paramArray[1];
-        var videoWidth      = paramArray[2];
-        var videoHeight     = paramArray[3];
-        var audioSampleFmt  = paramArray[4];
-        var audioChannels   = paramArray[5];
-        var audioSampleRate = paramArray[6];
+        if(isLocal){
+            var paramIntBuff    = paramByteBuffer >> 2;
+            var paramArray      = Module.HEAP32.subarray(paramIntBuff, paramIntBuff + paramCount);
+            var duration        = paramArray[0];
+            var videoPixFmt     = paramArray[1];
+            var videoWidth      = paramArray[2];
+            var videoHeight     = paramArray[3];
 
-        var objData = {
-            t: kOpenDecoderRsp,
-            e: ret,
-            v: {
-                d: duration,
-                p: videoPixFmt,
-                w: videoWidth,
-                h: videoHeight
-            },
-            a: {
-                f: audioSampleFmt,
-                c: audioChannels,
-                r: audioSampleRate
-            }
-        };
+            var objData = {
+                t: kOpenDecoderRsp,
+                e: ret,
+                v: {
+                    d: duration,
+                    p: videoPixFmt,
+                    w: videoWidth,
+                    h: videoHeight
+                }
+            };
+        } else {
+            var paramIntBuff    = paramByteBuffer >> 2;
+            var paramArray      = Module.HEAP32.subarray(paramIntBuff, paramIntBuff + paramCount);
+            var duration        = paramArray[0];
+            var videoPixFmt     = paramArray[1];
+            var videoWidth      = paramArray[2];
+            var videoHeight     = paramArray[3];
+            var audioSampleFmt  = paramArray[4];
+            var audioChannels   = paramArray[5];
+            var audioSampleRate = paramArray[6];
+
+            var objData = {
+                t: kOpenDecoderRsp,
+                e: ret,
+                v: {
+                    d: duration,
+                    p: videoPixFmt,
+                    w: videoWidth,
+                    h: videoHeight
+                },
+                a: {
+                    f: audioSampleFmt,
+                    c: audioChannels,
+                    r: audioSampleRate
+                }
+            };
+        } 
         self.postMessage(objData);
     } else {
         var objData = {
@@ -85,7 +112,7 @@ Decoder.prototype.openDecoder = function () {
     Module._free(paramByteBuffer);
 };
 
-Decoder.prototype.closeDecoder = function () {
+Decoder.prototype.closeDecoder = function (isLocal) {
     this.logger.logInfo("closeDecoder.");
     if (this.decodeTimer) {
         clearInterval(this.decodeTimer);
@@ -93,7 +120,11 @@ Decoder.prototype.closeDecoder = function () {
         this.logger.logInfo("Decode timer stopped.");
     }
 
-    var ret = Module._closeDecoder();
+    if(isLocal) {
+        var ret = Module._closeDecoderLiveH26x();
+    } else {
+        var ret = Module._closeDecoder();
+    }
     this.logger.logInfo("Close ffmpeg decoder return " + ret + ".");
 
     var objData = {
@@ -162,10 +193,10 @@ Decoder.prototype.processReq = function (req) {
             this.uninitDecoder();
             break;
         case kOpenDecoderReq:
-            this.openDecoder();
+            this.openDecoder(req.l);
             break;
         case kCloseDecoderReq:
-            this.closeDecoder();
+            this.closeDecoder(req.l);
             break;
         case kStartDecodingReq:
             this.startDecoding(req.i);
