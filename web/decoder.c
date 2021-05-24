@@ -498,6 +498,7 @@ int readFromFifo(uint8_t *data, int len) {
         if (availableBytes <= 0) {
             simpleLog("fifo is empty....");
             pthread_mutex_unlock(&decoder->readWriteMutex);
+            ret = 0;
             break;
         }
 
@@ -1123,13 +1124,13 @@ ErrorCode decodeOnePacket() {
     do {
         if (decoder == NULL) {
             ret = kErrorCode_Invalid_State;
-            simpleLog("decode test 01.");
+            simpleLog("[error]there is no invalid decoder.");
             break;
         }
 
         if (getAailableDataSize() <= 0) {
             ret = kErrorCode_Invalid_State;
-            simpleLog("decode test 02.");
+            simpleLog("[error]no availbale data size.");
             break;
         }
 
@@ -1139,13 +1140,13 @@ ErrorCode decodeOnePacket() {
         r = av_read_frame(decoder->avformatContext, &packet);
         if (r == AVERROR_EOF) {
             ret = kErrorCode_Eof;
-            simpleLog("decode test 03.");
+            simpleLog("[error]read frame end of file.");
             break;
         }
 
         if (r < 0 || packet.size == 0) {
             //simpleLog("decode test 04.");
-            simpleLog("av read frame ret %d %s packet size %d.", r, av_get_err(r), packet.size);
+            simpleLog("[error]av read frame ret %d %s packet size %d.", r, av_get_err(r), packet.size);
             break;
         }
 

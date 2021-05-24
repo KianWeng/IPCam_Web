@@ -80,7 +80,7 @@ function Player() {
 
 Player.prototype.initWSClient = function () {
     var self = this;
-    this.wsClient = new WebSocket("ws://10.0.0.2:11332");
+    this.wsClient = new WebSocket("ws://192.168.137.2:11332");
     this.wsClient.binaryType = "arraybuffer";
 
     this.wsClient.onopen = function(evt) {
@@ -823,7 +823,7 @@ Player.prototype.bufferFrame = function (frame) {
         return;
     }
     this.frameBuffer.push(frame);
-    this.logger.logInfo("bufferFrame " + frame.s + ", seq " + frame.q);
+    // this.logger.logInfo("bufferFrame " + frame.s + ", seq " + frame.q);
     if (this.getBufferTimerLength() >= maxBufferTimeLength || this.decoderState == decoderStateFinished) {
         if (this.decoding) {
             //this.logger.logInfo("Frame buffer time length >= " + maxBufferTimeLength + ", pause decoding.");
@@ -893,7 +893,7 @@ Player.prototype.displayVideoFrame = function (frame) {
         this.urgent = false;
     }
 
-    this.logger.logInfo("displayVideoFrame delay=" + delay + "=" + " " + frame.s  + " - (" + audioCurTs  + " + " + this.beginTimeOffset + ")" + "->" + audioTimestamp);
+    // this.logger.logInfo("displayVideoFrame delay=" + delay + "=" + " " + frame.s  + " - (" + audioCurTs  + " + " + this.beginTimeOffset + ")" + "->" + audioTimestamp);
     if (this.videoOnly) {
         var data = new Uint8Array(frame.d);
         this.renderVideoFrame(data);
